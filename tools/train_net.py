@@ -1,183 +1,263 @@
-"""
-Author: 520Chris
-Description: Train a person search network.
-"""
-
 import argparse
+import logging
 import os
-import pickle
+import os.path as osp
 import random
+import time
 
 import numpy as np
 import torch
 import torch.optim as optim
+from torch.utils.data import DataLoader
 
-from datasets.factory import get_imdb
+import _init_paths  # noqa: F401
+from datasets.psdb import PSDB
+from datasets.sampler import PSSampler
 from models.network import Network
-from roi_data_layer.dataloader import DataLoader
-from utils.config import cfg, cfg_from_file, get_output_dir
+from utils.config import cfg, cfg_from_file
+from utils.utils import init_logger
 
 
 def parse_args():
-    """Parse input arguments."""
-    parser = argparse.ArgumentParser(description='Train a person search network')
-    parser.add_argument('--gpu', dest='gpu',
-                        help='GPU device id to use [0,1,2,3,4,5,6,7,8]',
-                        default='0', type=str)
-    parser.add_argument('--iters', dest='max_iters',
-                        help='number of iterations to train',
-                        default=40000, type=int)
-    parser.add_argument('--weights', dest='pretrained_model',
-                        help='initialize with pretrained model weights',
-                        default=None, type=str)
-    parser.add_argument('--snapshot', dest='previous_state',
-                        help='initialize with previous solver state',
-                        default=None, type=str)
-    parser.add_argument('--cfg', dest='cfg_file',
-                        help='optional config file',
-                        default=None, type=str)
-    parser.add_argument('--imdb', dest='imdb_name',
-                        help='dataset to train on',
-                        default='voc_2007_trainval', type=str)
-    parser.add_argument('--rand', dest='randomize',
-                        help='randomize (do not use a fixed seed)',
-                        action='store_true')
+    parser = argparse.ArgumentParser(description="Train a person search network.")
+    parser.add_argument(
+        "--gpu", default=-1, type=int, help="GPU device id to use. Default: -1, means using CPU"
+    )
+    parser.add_argument(
+        "--epoch", default=5, type=int, help="Number of epochs to train. Default: 5"
+    )
+    parser.add_argument(
+        "--weights",
+        help="Initialize with pretrained model weights. "
+        + "Default: $ROOT/data/pretrained_model/resnet50_caffe.pth",
+    )
+    parser.add_argument(
+        "--checkpoint", help="Initialize with previous solver state. Default: None",
+    )
+    parser.add_argument("--cfg", help="Optional config file. Default: None")
+    parser.add_argument(
+        "--data_dir", help="The directory that saving experimental data. Default: $ROOT/data",
+    )
+    parser.add_argument(
+        "--dataset", default="psdb_train", help="Dataset to train on. Default: psdb_train"
+    )
+    parser.add_argument(
+        "--rand", action="store_true", help="Do not use a fixed seed. Default: False"
+    )
+    parser.add_argument("--solver", default="sgd", help="Training optimizer. Default: sgd")
+    parser.add_argument("--tbX", action="store_true", help="Enable tensorboardX. Default: False")
     return parser.parse_args()
 
 
-def init_from_caffe(net):
-    dict_new = net.state_dict().copy()
-    weight_path = '/home/zjli/Desktop/person_search/pkl1/caffe_model_weights.pkl'
-    caffe_weights = pickle.load(open(weight_path, "rb"), encoding='latin1')
-    for k in net.state_dict():
-        splits = k.split('.')
-
-        # Layer name mapping
-        if splits[-2] == 'rpn_conv':
-            name = 'rpn_conv/3x3'
-        elif splits[-2] == 'cls_score':
-            name = 'det_score'
-        elif splits[-2] in ['rpn_cls_score', 'rpn_bbox_pred', 'bbox_pred', 'feat_lowdim']:
-            name = splits[-2]
-        else:
-            name = 'caffe.' + splits[-2]
-
-        if name not in caffe_weights:
-            print("Layer: %s not found" % k)
-            continue
-
-        if splits[-1] == 'weight':  # For BN, weight is scale
-            dict_new[k] = torch.from_numpy(caffe_weights[name][0]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'bias':  # For BN, bias is shift
-            dict_new[k] = torch.from_numpy(caffe_weights[name][1]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'running_mean':
-            dict_new[k] = torch.from_numpy(caffe_weights[name][2]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'running_var':
-            dict_new[k] = torch.from_numpy(caffe_weights[name][3]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'num_batches_tracked':  # num_batches_tracked is unuseful in test phase
-            continue
-        else:
-            print("Layer: %s not found" % k)
-            continue
-
-    net.load_state_dict(dict_new)
-    net.labeled_matching_layer.lookup_table = torch.from_numpy(caffe_weights['labeled_matching'][0]).cuda()
-    net.unlabeled_matching_layer.queue.data = torch.from_numpy(caffe_weights['unlabeled_matching'][0]).cuda()
-    print("Load caffe model successfully!")
-
-
-def prepare_imdb(name):
-    print("Loading image database: %s" % name)
-    imdb = get_imdb(name)
-    print("Done.")
-    if cfg.TRAIN.USE_FLIPPED:
-        print('Appending horizontally-flipped training examples...')
-        imdb.append_flipped_images()
-        print('Done.')
-    return imdb
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
-    # net = Network()
-    # for k, v in net.named_parameters():
-    #     print(k)
 
-    # print('Called with args:')
-    # print(args)
+    if args.cfg:
+        cfg_from_file(args.cfg)
+    if args.data_dir:
+        cfg.DATA_DIR = osp.abspath(args.data_dir)
+    if args.weights is None and args.checkpoint is None:
+        args.weights = osp.join(cfg.DATA_DIR, "pretrained_model", "resnet50_caffe.pth")
 
-    if args.cfg_file is not None:
-        cfg_from_file(args.cfg_file)
+    init_logger("train.log")
+    logging.info("Called with args:\n" + str(args))
 
-    if not args.randomize:
+    if not args.rand:
         # Fix the random seeds (numpy and pytorch) for reproducibility
+        logging.info("Set to none random mode.")
         torch.manual_seed(cfg.RNG_SEED)
+        torch.cuda.manual_seed(cfg.RNG_SEED)
         torch.cuda.manual_seed_all(cfg.RNG_SEED)
-        torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        np.random.seed(cfg.RNG_SEED)
+        torch.backends.cudnn.deterministic = True
         random.seed(cfg.RNG_SEED)
-        os.environ['PYTHONHASHSEED'] = str(cfg.RNG_SEED)
+        np.random.seed(cfg.RNG_SEED)
+        os.environ["PYTHONHASHSEED"] = str(cfg.RNG_SEED)
 
-    imdb = prepare_imdb(args.imdb_name)
-    roidb = imdb.roidb
-    # print('%s roidb entries' % len(roidb))
+    output_dir = osp.join(cfg.DATA_DIR, "trained_model")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    output_dir = get_output_dir(imdb.name)
-    print('Output will be saved to `%s`' % output_dir)
+    assert args.dataset in ["psdb_train", "psdb_test"], "Unknown dataset: %s" % args.dataset
+    dataset = PSDB(args.dataset)
+    dataloader = DataLoader(dataset, batch_size=1, sampler=PSSampler(dataset))
+    logging.info("Loaded dataset: %s" % args.dataset)
 
-    dataloader = DataLoader(roidb)
+    # Initialize model
     net = Network()
-    init_from_caffe(net)
-    net.cuda()
-    optimizer = optim.SGD(net.get_training_params(),
-                          lr=cfg.TRAIN.LEARNING_RATE,
-                          momentum=cfg.TRAIN.MOMENTUM,
-                          weight_decay=cfg.TRAIN.WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=40000, gamma=0.1)
-    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
+    if args.weights:
+        state_dict = torch.load(args.weights)
+        net.load_state_dict({k: v for k, v in state_dict.items() if k in net.state_dict()})
+        logging.info("Loaded pretrained model from: %s" % args.weights)
 
-    # for i in range(10):
-    #     print(optimizer.state_dict()['param_groups'][0]['lr'])
-    #     if False:
-    #         optimizer.step()
-    #     scheduler.step()
+    # Initialize optimizer
+    lr = cfg.TRAIN.LEARNING_RATE
+    weight_decay = cfg.TRAIN.WEIGHT_DECAY
+    params = []
+    for k, v in net.named_parameters():
+        if v.requires_grad:
+            if "BN" in k:
+                params += [{"params": [v], "lr": lr, "weight_decay": 0}]
+            elif "bias" in k:
+                params += [{"params": [v], "lr": 2 * lr, "weight_decay": 0}]
+            else:
+                params += [{"params": [v], "lr": lr, "weight_decay": weight_decay}]
+    if args.solver == "sgd":
+        optimizer = optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
+    elif args.solver == "adam":
+        optimizer = optim.Adam(params)
+    else:
+        raise KeyError("Only support sgd and adam.")
 
-    max_iters = 50000
-    iter_size = 2  # accumulated gradient update
-    display = 20
-    average_loss = 100
+    # Training settings
+    start_epoch = 0
+    display = 20  # Display the loss every `display` steps
+    lr_decay_by_epoch = False  # True: decay by epoch, otherwise by step
+    lr_decay_epoch = 4  # Decay the learning rate every `lr_decay_epoch` epochs
+    lr_decay_step = 40000  # Decay the learning rate every `lr_decay_step` steps
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=lr_decay_step, gamma=0.1)
+    iter_size = 2  # Each update use accumulated gradient by `iter_size` iterations
+    use_caffe_smooth_loss = True
+    average_loss = 100  # Be used to calculate caffe smoothed loss
+
+    # Load checkpoint
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint)
+        start_epoch = checkpoint["epoch"] + 1
+        net.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scheduler" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+        logging.info("Loaded checkpoint from: %s" % args.checkpoint)
+
+    device = torch.device("cuda:%s" % args.gpu if args.gpu != -1 else "cpu")
+    net.to(device)
+
+    # Use tensorboardX to visualize experimental results
+    if args.tbX:
+        from tensorboardX import SummaryWriter
+
+        tb_log_path = osp.join(cfg.DATA_DIR, "tb_logs")
+        logger = SummaryWriter(tb_log_path)
+
+    net.train()
+    start = time.time()
+    accumulated_step = 0
+    loss = 0
     losses = []
+    ave_loss = 0
     smoothed_loss = 0
-    for i in range(max_iters):
-        # forward one iteration
-        loss = 0
-        for _ in range(iter_size):
-            blob = dataloader.get_next_minibatch()
-            output = net(torch.from_numpy(blob['data']).cuda(),
-                         torch.from_numpy(blob['im_info']).cuda(),
-                         torch.from_numpy(blob['gt_boxes']).cuda())
-            _, _, _, rpn_loss_cls, rpn_loss_bbox, loss_cls, loss_bbox, loss_id = output
-            loss_iter = (rpn_loss_cls + rpn_loss_bbox + loss_cls + loss_bbox + loss_id) / iter_size
-            loss_iter.backward()
+    real_steps_per_epoch = int(len(dataloader) / iter_size)
+    for epoch in range(start_epoch, args.epoch):
+        # Do learning rate decay
+        if lr_decay_by_epoch:
+            if epoch % lr_decay_epoch == 0 and epoch:
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = 0.1 * param_group["lr"]
+
+        for step, data in enumerate(dataloader):
+            real_step = int(step / iter_size)
+            img = data[0].to(device)
+            img_info = data[1][0].to(device)
+            gt_boxes = data[2][0].to(device)
+
+            total_steps = epoch * real_steps_per_epoch + real_step
+            if total_steps == 50000:
+                save_name = os.path.join(output_dir, "checkpoint_step_50000.pth")
+                save_dict = {
+                    "step": 50000,
+                    "model": net.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                }
+                if not lr_decay_by_epoch:
+                    save_dict["scheduler"] = scheduler.state_dict()
+                torch.save(save_dict, save_name)
+
+            _, _, _, _, rpn_loss_cls, rpn_loss_bbox, loss_cls, loss_bbox, loss_oim = net(
+                img, img_info, gt_boxes
+            )
+            loss_iter = (rpn_loss_cls + rpn_loss_bbox + loss_cls + loss_bbox + loss_oim) / iter_size
             loss += loss_iter
+            loss_iter.backward()
 
-        optimizer.step()
-        optimizer.zero_grad()
-        scheduler.step()  # adjust learning rate
+            accumulated_step += 1
+            if accumulated_step == iter_size:
+                optimizer.step()
+                optimizer.zero_grad()
 
-        if len(losses) < average_loss:
-            losses.append(loss)
-            size = len(losses)
-            smoothed_loss = (smoothed_loss * (size - 1) + loss) / size
-        else:
-            idx = i % average_loss
-            smoothed_loss += (loss - losses[idx]) / average_loss
-            losses[idx] = loss
+                # Adjust learning rate every real step
+                if not lr_decay_by_epoch:
+                    scheduler.step()
 
-        if i % display == 0:
-            print("Iteration [%s / %s]: loss: %.4f" % (i, max_iters, smoothed_loss))
-            print("rpn_loss_cls: %.4f, rpn_loss_bbox: %.4f, loss_cls: %.4f, loss_bbox: %.4f, loss_id: %.4f" %
-                  (rpn_loss_cls, rpn_loss_bbox, loss_cls, loss_bbox, loss_id))
+                if use_caffe_smooth_loss:
+                    if len(losses) < average_loss:
+                        losses.append(loss)
+                        size = len(losses)
+                        smoothed_loss = (smoothed_loss * (size - 1) + loss) / size
+                    else:
+                        idx = real_step % average_loss
+                        smoothed_loss += (loss - losses[idx]) / average_loss
+                        losses[idx] = loss
+                else:
+                    ave_loss += loss
 
-    torch.save(net, 'net.pth')
+                loss = 0
+                accumulated_step = 0
+
+                if real_step % display == 0:
+                    if use_caffe_smooth_loss:
+                        display_loss = smoothed_loss
+                    else:
+                        display_loss = ave_loss / display if real_step > 0 else ave_loss
+                        ave_loss = 0
+
+                    logging.info(
+                        (
+                            "\n--------------------------------------------------------------\n"
+                            + "Epoch: [%s / %s], iteration [%s / %s], loss: %.4f\n"
+                            + "Time cost: %.2f seconds\n"
+                            + "Learning rate: %s\n"
+                            + "The %s-th iteration loss:\n"
+                            + "  rpn_loss_cls: %.4f, rpn_loss_bbox: %.4f\n"
+                            + "  loss_cls: %.4f, loss_bbox: %.4f, loss_oim: %.4f\n"
+                            + "--------------------------------------------------------------\n"
+                        )
+                        % (
+                            epoch,
+                            args.epoch - 1,
+                            real_step,
+                            real_steps_per_epoch - 1,
+                            display_loss,
+                            time.time() - start,
+                            optimizer.param_groups[0]["lr"],
+                            real_step,
+                            rpn_loss_cls,
+                            rpn_loss_bbox,
+                            loss_cls,
+                            loss_bbox,
+                            loss_oim,
+                        )
+                    )
+
+                    start = time.time()
+
+                    if args.tbX:
+                        log_info = {
+                            "loss": display_loss,
+                            "rpn_loss_cls": rpn_loss_cls,
+                            "rpn_loss_bbox": rpn_loss_bbox,
+                            "loss_cls": loss_cls,
+                            "loss_bbox": loss_bbox,
+                            "loss_oim": loss_oim,
+                        }
+                        logger.add_scalars("Train/Loss", log_info, total_steps)
+
+        # Save checkpoint every epoch
+        save_name = os.path.join(output_dir, "checkpoint_epoch_%s.pth" % epoch)
+        save_dict = {"epoch": epoch, "model": net.state_dict(), "optimizer": optimizer.state_dict()}
+        if not lr_decay_by_epoch:
+            save_dict["scheduler"] = scheduler.state_dict()
+        torch.save(save_dict, save_name)
+
+    if args.tbX:
+        logger.close()

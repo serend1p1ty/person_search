@@ -1,141 +1,221 @@
-"""
-Author: 520Chris
-Description: person search network based on resnet50.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.ops import RoIAlign, RoIPool
+from torchvision.ops import RoIPool, nms
 
-from models.base_feat_layer import BaseFeatLayer
-from models.proposal_feat_layer import ProposalFeatLayer
+from datasets.data_processing import img_preprocessing
+from models.backbone import Backbone
+from models.head import Head
 from oim.labeled_matching_layer import LabeledMatchingLayer
 from oim.unlabeled_matching_layer import UnlabeledMatchingLayer
 from rpn.proposal_target_layer import ProposalTargetLayer
 from rpn.rpn_layer import RPN
+from utils.boxes import bbox_transform_inv, clip_boxes
 from utils.config import cfg
-from utils.net_utils import smooth_l1_loss
+from utils.utils import smooth_l1_loss
 
 
 class Network(nn.Module):
-    """Person search network."""
+    """
+    Person search network.
+
+    Paper: Joint Detection and Identification Feature Learning for Person Search
+           Tong Xiao, Shuang Li, Bochao Wang, Liang Lin, Xiaogang Wang
+    """
 
     def __init__(self):
         super(Network, self).__init__()
-        rpn_depth = 1024  # depth of the feature map fed into RPN
-        num_classes = 2   # bg and fg
-
-        # Extracting feature layer
-        self.base_feat_layer = BaseFeatLayer()
-        self.proposal_feat_layer = ProposalFeatLayer()
-
-        # RPN
+        rpn_depth = 1024  # Depth of the feature map fed into RPN
+        num_classes = 2  # Background and foreground
+        self.backbone = Backbone()
+        self.head = Head()
         self.rpn = RPN(rpn_depth)
-        self.proposal_target_layer = ProposalTargetLayer(num_classes=num_classes)
-        self.rois = None  # proposals produced by RPN
-
-        # Pooling layer
-        pool_size = cfg.POOLING_SIZE
-        self.roi_align = RoIAlign((pool_size, pool_size), 1.0 / 16.0, 0)
-        self.roi_pool = RoIPool((pool_size, pool_size), 1.0 / 16.0)
-
-        # Identification layer
-        self.cls_score = nn.Linear(2048, 2)
+        self.roi_pool = RoIPool((cfg.POOLING_SIZE, cfg.POOLING_SIZE), 1.0 / 16.0)
+        self.cls_score = nn.Linear(2048, num_classes)
         self.bbox_pred = nn.Linear(2048, num_classes * 4)
-        self.feat_lowdim = nn.Linear(2048, 256)
+        self.feature = nn.Linear(2048, 256)
+        self.proposal_target_layer = ProposalTargetLayer(num_classes)
         self.labeled_matching_layer = LabeledMatchingLayer()
         self.unlabeled_matching_layer = UnlabeledMatchingLayer()
 
-        self.frozen_blocks()
+        self.freeze_blocks()
 
-    def forward(self, im_data, im_info, gt_boxes, is_prob=False, rois=None):
-        assert im_data.size(0) == 1, 'Single batch only.'
+    def forward(self, img, img_info, gt_boxes, probe_roi=None):
+        """
+        Args:
+            img (Tensor): Single image data.
+            img_info (Tensor): (height, width, scale)
+            gt_boxes (Tensor): Ground-truth boxes in (x1, y1, x2, y2, class, person_id) format.
+            probe_roi (Tensor): Take probe_roi as proposal instead of using RPN.
+
+        Returns:
+            proposals (Tensor): Region proposals produced by RPN in (0, x1, y1, x2, y2) format.
+            probs (Tensor): Classification probability of these proposals.
+            proposal_deltas (Tensor): Proposal regression deltas.
+            features (Tensor): Extracted features of these proposals.
+            rpn_loss_cls, rpn_loss_bbox, loss_cls, loss_bbox and loss_oim (Tensor): Training losses.
+        """
+        assert img.size(0) == 1, "Single batch only."
 
         # Extract basic feature from image data
-        base_feat = self.base_feat_layer(im_data)
+        base_feat = self.backbone(img)
 
-        if not is_prob:
-            # Feed base feature map to RPN to obtain rois
-            self.rois, rpn_loss_cls, rpn_loss_bbox = self.rpn(base_feat, im_info, gt_boxes)
+        if probe_roi is None:
+            # Feed basic feature map to RPN to obtain rois
+            proposals, rpn_loss_cls, rpn_loss_bbox = self.rpn(base_feat, img_info, gt_boxes)
         else:
-            assert rois is not None, "RoIs is not given in detect probe mode."
-            self.rois, rpn_loss_cls, rpn_loss_bbox = rois, 0, 0
+            # Take given probe_roi as proposal if probe_roi is not None
+            proposals, rpn_loss_cls, rpn_loss_bbox = probe_roi, 0, 0
 
         if self.training:
-            # Sample 128 rois and assign them labels and bbox regression targets
-            roi_data = self.proposal_target_layer(self.rois, gt_boxes)
-            self.rois, rois_label, rois_target, rois_inside_ws, rois_outside_ws, pid_label = roi_data
+            # Sample some proposals and assign them ground-truth targets
+            (
+                proposals,
+                cls_labels,
+                pid_labels,
+                gt_proposal_deltas,
+                proposal_inside_ws,
+                proposal_outside_ws,
+            ) = self.proposal_target_layer(proposals, gt_boxes)
         else:
-            rois_label, rois_target, rois_inside_ws, rois_outside_ws, pid_label = [None] * 5
+            cls_labels, pid_labels, gt_proposal_deltas, proposal_inside_ws, proposal_outside_ws = [
+                None
+            ] * 5
 
-        # Do roi pooling based on region proposals
-        if cfg.POOLING_MODE == 'align':
-            pooled_feat = self.roi_align(base_feat, self.rois)
-        elif cfg.POOLING_MODE == 'pool':
-            pooled_feat = self.roi_pool(base_feat, self.rois)
-        else:
-            raise NotImplementedError("Only support roi_align and roi_pool.")
+        # RoI pooling based on region proposals
+        pooled_feat = self.roi_pool(base_feat, proposals)
 
         # Extract the features of proposals
-        if not is_prob:
-            proposal_feat = self.proposal_feat_layer(pooled_feat).squeeze()
-        else:
-            proposal_feat = self.proposal_feat_layer(pooled_feat).squeeze().unsqueeze(0)
+        proposal_feat = self.head(pooled_feat).squeeze(2).squeeze(2)
 
-        cls_score = self.cls_score(proposal_feat)
-        cls_prob = F.softmax(cls_score, dim=1)
-        bbox_pred = self.bbox_pred(proposal_feat)
-        feat_lowdim = self.feat_lowdim(proposal_feat)
-        feat = F.normalize(feat_lowdim)
+        scores = self.cls_score(proposal_feat)
+        probs = F.softmax(scores, dim=1)
+        proposal_deltas = self.bbox_pred(proposal_feat)
+        features = F.normalize(self.feature(proposal_feat))
 
         if self.training:
-            loss_cls = F.cross_entropy(cls_score, rois_label)
-            loss_bbox = smooth_l1_loss(bbox_pred,
-                                       rois_target,
-                                       rois_inside_ws,
-                                       rois_outside_ws)
+            loss_cls = F.cross_entropy(scores, cls_labels)
+            loss_bbox = smooth_l1_loss(
+                proposal_deltas, gt_proposal_deltas, proposal_inside_ws, proposal_outside_ws
+            )
 
             # OIM loss
-            labeled_matching_scores, id_labels = self.labeled_matching_layer(feat, pid_label)
+            labeled_matching_scores = self.labeled_matching_layer(features, pid_labels)
             labeled_matching_scores *= 10
-            unlabeled_matching_scores = self.unlabeled_matching_layer(feat, pid_label)
+            unlabeled_matching_scores = self.unlabeled_matching_layer(features, pid_labels)
             unlabeled_matching_scores *= 10
-            id_scores = torch.cat((labeled_matching_scores, unlabeled_matching_scores), dim=1)
-            loss_id = F.cross_entropy(id_scores, id_labels, ignore_index=-1)
+            matching_scores = torch.cat((labeled_matching_scores, unlabeled_matching_scores), dim=1)
+            pid_labels = pid_labels.clone()
+            pid_labels[pid_labels == -2] = -1
+            loss_oim = F.cross_entropy(matching_scores, pid_labels, ignore_index=-1)
         else:
-            loss_cls, loss_bbox, loss_id = 0, 0, 0
+            loss_cls, loss_bbox, loss_oim = 0, 0, 0
 
-        return cls_prob, bbox_pred, feat, rpn_loss_cls, rpn_loss_bbox, loss_cls, loss_bbox, loss_id
+        return (
+            proposals,
+            probs,
+            proposal_deltas,
+            features,
+            rpn_loss_cls,
+            rpn_loss_bbox,
+            loss_cls,
+            loss_bbox,
+            loss_oim,
+        )
 
-    def frozen_blocks(self):
-        for p in self.base_feat_layer.SpatialConvolution_0.parameters():
+    def freeze_blocks(self):
+        """
+        The reason why we freeze all BNs in the backbone: The batch size is 1
+        in the backbone, so BN is not stable.
+
+        Reference: https://github.com/ShuangLI59/person_search/issues/87
+        """
+        for p in self.backbone.SpatialConvolution_0.parameters():
             p.requires_grad = False
 
         def set_bn_fix(m):
             classname = m.__class__.__name__
-            if classname.find('BatchNorm') != -1:
+            if classname.find("BatchNorm") != -1:
                 for p in m.parameters():
                     p.requires_grad = False
 
-        def set_bn_eval(m):
-            classname = m.__class__.__name__
-            if classname.find('BatchNorm') != -1:
-                m.eval()
+        # Frozen all bn layers in backbone
+        self.backbone.apply(set_bn_fix)
 
-        # frozen the BN layers in base_feat_layer
-        self.base_feat_layer.apply(set_bn_fix)
-        self.base_feat_layer.apply(set_bn_eval)
+    def train(self, mode=True):
+        """
+        It's not enough to just freeze all BNs in backbone.
+        Setting them to eval mode is also needed.
+        """
+        nn.Module.train(self, mode)
 
-    def get_training_params(self):
-        base_lr = cfg.TRAIN.LEARNING_RATE
-        params = []
-        for k, v in self.named_parameters():
-            if v.requires_grad:
-                if 'BN' in k:
-                    params += [{'params': [v], 'weight_decay': 0}]
-                elif 'bias' in k:
-                    params += [{'params': [v], 'lr': 2 * base_lr, 'weight_decay': 0}]
-                else:
-                    params += [{'params': [v]}]
-        return params
+        if mode:
+            # Set all bn layers in backbone to eval mode
+            def set_bn_eval(m):
+                classname = m.__class__.__name__
+                if classname.find("BatchNorm") != -1:
+                    m.eval()
+
+            self.backbone.apply(set_bn_eval)
+
+    def inference(self, img, probe_roi=None, threshold=0.75):
+        """
+        End to end inference. Specific behavior depends on probe_roi.
+        If probe_roi is None, detect persons in the image and extract their features.
+        Otherwise, extract the feature of the probe RoI in the image.
+
+        Args:
+            img (np.ndarray[H, W, C]): Image of BGR order.
+            probe_roi (np.ndarray[4]): The RoI to be extracting feature.
+            threshold (float): The threshold used to remove those bounding boxes with low scores.
+
+        Returns:
+            detections (Tensor[N, 5]): Detected person bounding boxes in
+                                       (x1, y1, x2, y2, score) format.
+            features (Tensor[N, 256]): Features of these bounding boxes.
+        """
+        device = self.cls_score.weight.device
+        processed_img, scale = img_preprocessing(img)
+        # [C, H, W] -> [N, C, H, W]
+        processed_img = torch.from_numpy(processed_img).unsqueeze(0).to(device)
+        # img_info: (height, width, scale)
+        img_info = torch.Tensor([processed_img.shape[2], processed_img.shape[3], scale]).to(device)
+        if probe_roi is not None:
+            probe_roi = torch.from_numpy(probe_roi).float().view(1, 4)
+            probe_roi *= scale
+            # Add an extra 0, which means the probe_roi is from the first image in the batch
+            probe_roi = torch.cat((torch.zeros(1, 1), probe_roi.float()), dim=1).to(device)
+
+        with torch.no_grad():
+            proposals, probs, proposal_deltas, features, _, _, _, _, _ = self.forward(
+                processed_img, img_info, None, probe_roi
+            )
+
+        if probe_roi is not None:
+            return features
+
+        # Unscale proposals back to raw image space
+        proposals = proposals[:, 1:5] / scale
+        # Unnormalize proposal deltas
+        num_classes = proposal_deltas.shape[1] // 4
+        stds = torch.Tensor(cfg.TRAIN.BBOX_NORMALIZE_STDS).repeat(num_classes).to(device)
+        means = torch.Tensor(cfg.TRAIN.BBOX_NORMALIZE_MEANS).repeat(num_classes).to(device)
+        proposal_deltas = proposal_deltas * stds + means
+        # Apply proposal regression deltas
+        boxes = bbox_transform_inv(proposals, proposal_deltas)
+        boxes = clip_boxes(boxes, img.shape)
+
+        # Remove those boxes with scores below the threshold
+        j = 1  # Only consider foreground class
+        keep = torch.nonzero(probs[:, j] > threshold)[:, 0]
+        boxes = boxes[keep, j * 4 : (j + 1) * 4]
+        probs = probs[keep, j]
+        features = features[keep]
+
+        # Remove redundant boxes with NMS
+        detections = torch.cat((boxes, probs.unsqueeze(1)), dim=1)
+        keep = nms(boxes, probs, cfg.TEST.NMS)
+        detections = detections[keep]
+        features = features[keep]
+
+        return detections, features

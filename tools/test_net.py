@@ -1,95 +1,110 @@
-"""
-Author: https://github.com/ShuangLI59/person_search.git
-Description: Evaluate network in psdb_test dataset.
-"""
+import argparse
+import logging
+import os.path as osp
 
-import pickle
-
+import cv2
 import torch
+from tqdm import tqdm
 
-from datasets.factory import get_imdb
+import _init_paths  # noqa: F401
+from datasets.psdb import PSDB
 from models.network import Network
-from test_gallery import detect_and_exfeat
-from test_probe import exfeat
-from utils.config import cfg
-from utils import unpickle
+from utils.config import cfg, cfg_from_file
+from utils.evaluate import evaluate_detections, evaluate_search
+from utils.utils import init_logger, pickle, unpickle
 
 
-def init_from_caffe(net):
-    dict_new = net.state_dict().copy()
-    weight_path = '/home/zjli/Desktop/person_search/pkl/caffe_model_weights.pkl'
-    caffe_weights = pickle.load(open(weight_path, "rb"), encoding='latin1')
-    for k in net.state_dict():
-        splits = k.split('.')
-
-        # Layer name mapping
-        if splits[-2] == 'rpn_conv':
-            name = 'rpn_conv/3x3'
-        elif splits[-2] == 'cls_score':
-            name = 'det_score'
-        elif splits[-2] in ['rpn_cls_score', 'rpn_bbox_pred', 'bbox_pred', 'feat_lowdim']:
-            name = splits[-2]
-        else:
-            name = 'caffe.' + splits[-2]
-
-        if name not in caffe_weights:
-            print("Layer: %s not found" % k)
-            continue
-
-        if splits[-1] == 'weight':  # For BN, weight is scale
-            dict_new[k] = torch.from_numpy(caffe_weights[name][0]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'bias':  # For BN, bias is shift
-            dict_new[k] = torch.from_numpy(caffe_weights[name][1]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'running_mean':
-            dict_new[k] = torch.from_numpy(caffe_weights[name][2]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'running_var':
-            dict_new[k] = torch.from_numpy(caffe_weights[name][3]).reshape(dict_new[k].shape)
-        elif splits[-1] == 'num_batches_tracked':  # num_batches_tracked is unuseful in test phase
-            continue
-        else:
-            print("Layer: %s not found" % k)
-            continue
-
-    net.load_state_dict(dict_new)
-    print("Load caffe model successfully!")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Test the person search network.")
+    parser.add_argument(
+        "--gpu", default=-1, type=int, help="GPU device id to use. Default: -1, means using CPU"
+    )
+    parser.add_argument("--checkpoint", help="The checkpoint to be tested. Default: None")
+    parser.add_argument("--cfg", help="Optional config file. Default: None")
+    parser.add_argument(
+        "--data_dir", help="The directory that saving experimental data. Default: $ROOT/data",
+    )
+    parser.add_argument(
+        "--dataset", default="psdb_test", help="Dataset to test on. Default: psdb_test"
+    )
+    parser.add_argument(
+        "--eval_only",
+        action="store_true",
+        help="Evaluation with pre extracted features. Default: False",
+    )
+    return parser.parse_args()
 
 
-def main():
-    cfg.TEST.NMS = 0.4
-    cfg.TRAIN.BBOX_NORMALIZE_TARGETS_PRECOMPUTED = True
-    imdb = get_imdb('psdb_test')
+def detect_and_exfeat(net, dataset, threshold=0.05):
+    """
+    Detect and extract features for each image in dataset.
+    """
+    num_images = dataset.num_images
+    all_boxes = []
+    all_features = []
+    for i in tqdm(range(num_images)):
+        img = cv2.imread(dataset.image_path_at(i))
+        detection, feat = net.inference(img, threshold=threshold)
+        all_boxes.append(detection.cpu().numpy())
+        all_features.append(feat.cpu().numpy())
+    return all_boxes, all_features
 
-    # 1. Detect and extract features from all the gallery images in the imdb
-    net = torch.load('net.pth')
-    # net = Network()
-    # init_from_caffe(net)
-    net.eval()
-    net.cuda()
-    gboxes, gfeatures = detect_and_exfeat(net, imdb)
 
-    # 2. Only extract features from given probe rois
-    pfeatures = exfeat(net, imdb.probes)
-
-    # Save
-    # from utils import pickle
-    # pickle(gboxes, 'gallery_detections.pkl')
-    # pickle(gfeatures, 'gallery_features.pkl')
-    # pickle(pfeatures, 'probe_features.pkl')
-
-    # gboxes = pickle.load(open('./pkl/gallery_detections.pkl', "rb"), encoding='latin1')
-    # gfeatures = pickle.load(open('./pkl/gallery_features.pkl', "rb"), encoding='latin1')
-    # pfeatures = pickle.load(open('./pkl/probe_features.pkl', "rb"), encoding='latin1')
-
-    # gboxes = unpickle('gallery_detections.pkl')
-    # gfeatures = unpickle('gallery_features.pkl')
-    # pfeatures = unpickle('probe_features.pkl')
-
-    # Evaluate
-    imdb.evaluate_detections(gboxes, det_thresh=0.5)
-    imdb.evaluate_detections(gboxes, det_thresh=0.5, labeled_only=True)
-    imdb.evaluate_search(gboxes, gfeatures['feat'], pfeatures['feat'], det_thresh=0.5,
-                         gallery_size=100)
+def exfeat(net, probes):
+    """
+    Extract the features of given probe RoI.
+    """
+    num_images = len(probes)
+    all_features = []
+    for i in tqdm(range(num_images)):
+        im_name, roi = probes[i]
+        img = cv2.imread(im_name)
+        feat = net.inference(img, roi)
+        all_features.append(feat.cpu().numpy())
+    return all_features
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+
+    if args.cfg:
+        cfg_from_file(args.cfg)
+    if args.checkpoint is None:
+        raise KeyError("--checkpoint option can not be empty.")
+    if args.data_dir:
+        cfg.DATA_DIR = osp.abspath(args.data_dir)
+
+    init_logger("test.log")
+    logging.info("Called with args:\n" + str(args))
+
+    dataset = PSDB(args.dataset)
+    logging.info("Loaded dataset: %s" % args.dataset)
+
+    net = Network()
+    checkpoint = torch.load(osp.abspath(args.checkpoint))
+    net.load_state_dict(checkpoint["model"])
+    logging.info("Loaded checkpoint from: %s" % args.checkpoint)
+    net.eval()
+    device = torch.device("cuda:%s" % args.gpu if args.gpu != -1 else "cpu")
+    net.to(device)
+
+    save_path = osp.join(cfg.DATA_DIR, "cache")
+    if args.eval_only:
+        gboxes = unpickle(osp.join(save_path, "gallery_detections.pkl"))
+        gfeatures = unpickle(osp.join(save_path, "gallery_features.pkl"))
+        pfeatures = unpickle(osp.join(save_path, "probe_features.pkl"))
+    else:
+        # 1. Detect and extract features from all the gallery images in the dataset
+        gboxes, gfeatures = detect_and_exfeat(net, dataset)
+
+        # 2. Only extract features of given probe RoI
+        pfeatures = exfeat(net, dataset.probes)
+
+        pickle(gboxes, osp.join(save_path, "gallery_detections.pkl"))
+        pickle(gfeatures, osp.join(save_path, "gallery_features.pkl"))
+        pickle(pfeatures, osp.join(save_path, "probe_features.pkl"))
+
+    # Evaluate
+    evaluate_detections(dataset, gboxes, threshold=0.5)
+    evaluate_detections(dataset, gboxes, threshold=0.5, labeled_only=True)
+    evaluate_search(dataset, gboxes, gfeatures, pfeatures, threshold=0.5, gallery_size=100)

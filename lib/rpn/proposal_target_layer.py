@@ -1,154 +1,137 @@
-"""
-Author: Ross Girshick and Sean Bell
-Description: Assign labels and regression targets to region proposals.
-"""
+# --------------------------------------------------------
+# Faster R-CNN
+# Copyright (c) 2015 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+# Written by Ross Girshick and Sean Bell
+# --------------------------------------------------------
 
-import numpy as np
-import numpy.random as npr
+import os
+
 import torch
 import torch.nn as nn
 
+from utils.boxes import bbox_overlaps, bbox_transform
 from utils.config import cfg
-from utils.net_utils import bbox_overlaps, bbox_transform
+from utils.utils import torch_rand_choice
 
 
 class ProposalTargetLayer(nn.Module):
     """
-    Assign object detection proposals to ground-truth targets. Produces proposal
-    classification labels and bounding-box regression targets.
+    Sample some proposals at the specified positive and negative ratio.
+
+    And assign ground-truth targets (cls_labels, pid_labels, deltas, inside_weights,
+    outside_weights) to these sampled proposals.
+
+    BTW:
+    pid_label = -1 -----> foreground proposals containing an unlabeled person.
+    pid_label = -2 -----> background proposals.
     """
 
-    def __init__(self, num_classes, bg_pid_label=5532):
+    def __init__(self, num_classes, bg_pid_label=-2):
         super(ProposalTargetLayer, self).__init__()
         self.num_classes = num_classes
         self.bg_pid_label = bg_pid_label
 
-    def forward(self, all_rois, gt_boxes, use_rand=True):
-        # Proposal ROIs (0, x1, y1, x2, y2) coming from RPN
-        # (i.e., rpn.proposal_layer.ProposalLayer), or any other source
-        all_rois = all_rois.cpu().numpy()
+    def forward(self, proposals, gt_boxes):
+        """
+        Args:
+            proposals (Tensor): Region proposals in (0, x1, y1, x2, y2) format coming from RPN.
+            gt_boxes (Tensor): Ground-truth boxes in (x1, y1, x2, y2, class, person_id) format.
 
-        # GT boxes (x1, y1, x2, y2, class, pid)
-        gt_boxes = gt_boxes.cpu().numpy()
+        Returns:
+            proposals (Tensor[N, 5]): Sampled proposals.
+            cls_labels (Tensor[N]): Ground-truth classification labels of the proposals.
+            pid_labels (Tensor[N]): Ground-truth person IDs of the proposals.
+            deltas (Tensor[N, num_classes * 4]):  Ground-truth regression deltas of the proposals.
+            inside_weights, outside_weights (Tensor): Used to calculate smooth_l1_loss.
+        """
+        assert torch.all(proposals[:, 0] == 0), "Single batch only."
 
-        # Include ground-truth boxes in the set of candidate rois
-        zeros = np.zeros((gt_boxes.shape[0], 1), dtype=gt_boxes.dtype)
-        all_rois = np.vstack((all_rois, np.hstack((zeros, gt_boxes[:, :4]))))
+        # Include ground-truth boxes in the set of candidate proposals
+        zeros = gt_boxes.new(gt_boxes.shape[0], 1).zero_()
+        proposals = torch.cat((proposals, torch.cat((zeros, gt_boxes[:, :4]), dim=1)), dim=0)
 
-        # Sanity check: single batch only
-        assert np.all(all_rois[:, 0] == 0), 'Single batch only.'
+        overlaps = bbox_overlaps(proposals[:, 1:5], gt_boxes[:, :4])
+        max_overlaps, argmax_overlaps = overlaps.max(dim=1)
+        cls_labels = gt_boxes[argmax_overlaps, 4]
+        pid_labels = gt_boxes[argmax_overlaps, 5]
 
-        num_images = 1
-        rois_per_image = int(cfg.TRAIN.BATCH_SIZE / num_images)
-        fg_rois_per_image = int(np.round(cfg.TRAIN.FG_FRACTION * rois_per_image))
+        # Sample some proposals at the specified positive and negative ratio
+        batch_size = cfg.TRAIN.BATCH_SIZE
+        num_fg = round(cfg.TRAIN.FG_FRACTION * batch_size)
 
-        # Sample rois with classification labels and bounding box regression targets
-        sample_data = sample_rois(all_rois, gt_boxes, fg_rois_per_image, rois_per_image,
-                                  self.num_classes, self.bg_pid_label, use_rand)
+        # Sample foreground proposals
+        fg_inds = torch.nonzero(max_overlaps >= cfg.TRAIN.FG_THRESH)[:, 0]
+        num_fg = min(num_fg, fg_inds.numel())
+        if fg_inds.numel() > 0:
+            if "DEBUG" in os.environ:
+                fg_inds = fg_inds[:num_fg]
+            else:
+                fg_inds = torch_rand_choice(fg_inds, num_fg)
 
-        labels, rois, bbox_targets, bbox_inside_weights, aux_label = sample_data
-        bbox_outside_weights = np.array(bbox_inside_weights > 0).astype(np.float32)
+        # Sample background proposals
+        bg_inds = torch.nonzero(
+            (max_overlaps < cfg.TRAIN.BG_THRESH_HI) & (max_overlaps >= cfg.TRAIN.BG_THRESH_LO)
+        )[:, 0]
+        num_bg = min(batch_size - num_fg, bg_inds.numel())
+        if bg_inds.numel() > 0:
+            if "DEBUG" in os.environ:
+                bg_inds = bg_inds[:num_bg]
+            else:
+                bg_inds = torch_rand_choice(bg_inds, num_bg)
 
-        return (torch.from_numpy(rois).cuda(),
-                torch.from_numpy(labels).long().cuda(),
-                torch.from_numpy(bbox_targets).cuda(),
-                torch.from_numpy(bbox_inside_weights).cuda(),
-                torch.from_numpy(bbox_outside_weights).cuda(),
-                torch.from_numpy(aux_label).long().cuda())
+        # assert num_fg + num_bg == batch_size
 
+        keep = torch.cat((fg_inds, bg_inds))
+        cls_labels = cls_labels[keep]
+        pid_labels = pid_labels[keep]
+        proposals = proposals[keep]
 
-def get_bbox_regression_labels(bbox_target_data, num_classes):
-    """Bounding-box regression targets (bbox_target_data) are stored in a
-    compact form N x (class, tx, ty, tw, th)
+        # Correct the cls_labels and pid_labels of bg proposals
+        cls_labels[num_fg:] = 0
+        pid_labels[num_fg:] = self.bg_pid_label
 
-    This function expands those targets into the 4-of-4*K representation used
-    by the network (i.e. only one class has non-zero targets).
+        deltas, inside_weights, outside_weights = self.get_regression_targets(
+            proposals[:, 1:5], gt_boxes[argmax_overlaps][keep, :4], cls_labels, self.num_classes,
+        )
 
-    Returns:
-        bbox_target (ndarray): N x 4K blob of regression targets
-        bbox_inside_weights (ndarray): N x 4K blob of loss weights
-    """
-    clss = bbox_target_data[:, 0]
-    bbox_targets = np.zeros((clss.size, 4 * num_classes), dtype=np.float32)
-    bbox_inside_weights = np.zeros(bbox_targets.shape, dtype=np.float32)
-    inds = np.where(clss > 0)[0]
-    for ind in inds:
-        cls = int(round(clss[ind]))
-        start = 4 * cls
-        end = start + 4
-        bbox_targets[ind, start:end] = bbox_target_data[ind, 1:]
-        bbox_inside_weights[ind, start:end] = cfg.TRAIN.BBOX_INSIDE_WEIGHTS
-    return bbox_targets, bbox_inside_weights
+        return (
+            proposals,
+            cls_labels.long(),
+            pid_labels.long(),
+            deltas,
+            inside_weights,
+            outside_weights,
+        )
 
+    @staticmethod
+    def get_regression_targets(proposals, gt_boxes, cls_labels, num_classes):
+        """
+        Args:
+            proposals (Tensor): Sampled proposals in (x1, y1, x2, y2) format.
+            gt_boxes (Tensor): Ground-truth boxes in (x1, y1, x2, y2) format.
+            cls_labels (Tensor): Classification labels of the proposals.
+            num_classes (int): Number of classes.
 
-def compute_targets(ex_rois, gt_rois, labels):
-    """Compute bounding-box regression targets for an image."""
-    assert ex_rois.shape[0] == gt_rois.shape[0]
-    assert ex_rois.shape[1] == 4
-    assert gt_rois.shape[1] == 4
+        Returns:
+            deltas ([N, num_classes * 4]): Proposal regression deltas.
+            inside_weights, outside_weights (Tensor): Used to calculate smooth_l1_loss.
+        """
+        deltas_data = bbox_transform(proposals, gt_boxes)
+        # Normalize targets by a precomputed mean and stdev
+        means = gt_boxes.new(cfg.TRAIN.BBOX_NORMALIZE_MEANS)
+        stds = gt_boxes.new(cfg.TRAIN.BBOX_NORMALIZE_STDS)
+        deltas_data = (deltas_data - means) / stds
 
-    targets = bbox_transform(ex_rois, gt_rois)
-    if cfg.TRAIN.BBOX_NORMALIZE_TARGETS_PRECOMPUTED:
-        # Optionally normalize targets by a precomputed mean and stdev
-        targets = ((targets - np.array(cfg.TRAIN.BBOX_NORMALIZE_MEANS))
-                   / np.array(cfg.TRAIN.BBOX_NORMALIZE_STDS))
-    return np.hstack((labels[:, np.newaxis], targets)).astype(np.float32, copy=False)
-
-
-def sample_rois(all_rois, gt_boxes, fg_rois_per_image, rois_per_image, num_classes, bg_pid_label, use_rand):
-    """Generate a random sample of RoIs comprising foreground and background examples."""
-    # overlaps: (rois x gt_boxes)
-    overlaps = bbox_overlaps(np.ascontiguousarray(all_rois[:, 1:5], dtype=np.float),
-                             np.ascontiguousarray(gt_boxes[:, :4], dtype=np.float))
-    gt_assignment = overlaps.argmax(axis=1)
-    max_overlaps = overlaps.max(axis=1)
-    labels = gt_boxes[gt_assignment, 4]
-
-    # Select foreground RoIs as those with >= FG_THRESH overlap
-    fg_inds = np.where(max_overlaps >= cfg.TRAIN.FG_THRESH)[0]
-    # Guard against the case when an image has fewer than fg_rois_per_image foreground RoIs
-    fg_rois_per_this_image = min(fg_rois_per_image, fg_inds.size)
-    # Sample foreground regions without replacement
-    if fg_inds.size > 0:
-        if use_rand:
-            fg_inds = npr.choice(fg_inds, size=fg_rois_per_this_image, replace=False)
-        else:
-            fg_inds = fg_inds[:fg_rois_per_this_image]
-
-    # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
-    bg_inds = np.where((max_overlaps < cfg.TRAIN.BG_THRESH_HI) &
-                       (max_overlaps >= cfg.TRAIN.BG_THRESH_LO))[0]
-    # Compute number of background RoIs to take from this image
-    bg_rois_per_this_image = rois_per_image - fg_rois_per_this_image
-    # Guard against the case when an image has fewer than bg_rois_per_this_image background RoIs
-    bg_rois_per_this_image = min(bg_rois_per_this_image, bg_inds.size)
-    # Sample background regions without replacement
-    if bg_inds.size > 0:
-        if use_rand:
-            bg_inds = npr.choice(bg_inds, size=bg_rois_per_this_image, replace=False)
-        else:
-            bg_inds = bg_inds[:bg_rois_per_this_image]
-
-    assert fg_rois_per_this_image + bg_rois_per_this_image == rois_per_image, \
-        "fg_boxes + bg_boxes must be %s" % rois_per_image
-
-    # The indices that we're selecting (both fg and bg)
-    keep_inds = np.append(fg_inds, bg_inds)
-    # Select sampled values from various arrays
-    labels = labels[keep_inds]
-    # Clamp labels for the background RoIs to 0
-    labels[fg_rois_per_this_image:] = 0
-    rois = all_rois[keep_inds]
-
-    # Auxiliary label if available
-    pid_label = None
-    if gt_boxes.shape[1] > 5:
-        pid_label = gt_boxes[gt_assignment, 5]
-        pid_label = pid_label[keep_inds]
-        pid_label[fg_rois_per_this_image:] = bg_pid_label
-
-    bbox_target_data = compute_targets(rois[:, 1:5], gt_boxes[gt_assignment[keep_inds], :4], labels)
-
-    bbox_targets, bbox_inside_weights = get_bbox_regression_labels(bbox_target_data, num_classes)
-
-    return labels, rois, bbox_targets, bbox_inside_weights, pid_label
+        deltas = gt_boxes.new(proposals.size(0), 4 * num_classes).zero_()
+        inside_weights = deltas.clone()
+        outside_weights = deltas.clone()
+        fg_inds = torch.nonzero(cls_labels > 0)[:, 0]
+        for ind in fg_inds:
+            cls = int(cls_labels[ind])
+            start = 4 * cls
+            end = start + 4
+            deltas[ind, start:end] = deltas_data[ind]
+            inside_weights[ind, start:end] = gt_boxes.new(cfg.TRAIN.BBOX_INSIDE_WEIGHTS)
+            outside_weights[ind, start:end] = gt_boxes.new(4).fill_(1)
+        return deltas, inside_weights, outside_weights

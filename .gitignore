@@ -2,7 +2,7 @@
 *.pkl
 data
 test
-output
+logs
 
 # READ THIS BEFORE YOU REFACTOR ME
 #

@@ -3,37 +3,23 @@ import torch.nn as nn
 from torch.autograd import Function
 
 
-class CircularQueue:
-    """A simple circular queue with only tail pointer."""
-
-    def __init__(self, queue_size=5000, feat_len=256):
-        self.data = torch.zeros(queue_size, feat_len).cuda()
-        self.tail = 0
-        self.queue_size = queue_size
-        self.feat_len = feat_len
-
-    def enqueue(self, item):
-        assert item.size(0) == self.feat_len, "Feature length does not match."
-        self.data[self.tail] = item
-        self.tail = (self.tail + 1) % self.queue_size
-
-
 class UnlabeledMatching(Function):
-
     @staticmethod
-    def forward(ctx, feats, pid_labels, queue):
-        # The queue can't be saved with ctx.save_for_backward(), as we would modify
-        # the variable which has the same memory address in backward()
-        ctx.save_for_backward(feats, pid_labels)
+    def forward(ctx, features, pid_labels, queue, tail):
+        # The queue/tail can't be saved with ctx.save_for_backward(), as we would
+        # modify the variable which has the same memory address in backward()
+        ctx.save_for_backward(features, pid_labels)
         ctx.queue = queue
+        ctx.tail = tail
 
-        score = feats.mm(queue.data.t())
-        return score
+        scores = features.mm(queue.t())
+        return scores
 
     @staticmethod
     def backward(ctx, grad_output):
-        feats, pid_labels = ctx.saved_tensors
+        features, pid_labels = ctx.saved_tensors
         queue = ctx.queue
+        tail = ctx.tail
 
         grad_feats = None
         if ctx.needs_input_grad[0]:
@@ -42,18 +28,38 @@ class UnlabeledMatching(Function):
         # Update circular queue, but not by standard backpropagation with gradients
         for indx, label in enumerate(pid_labels):
             if label == -1:
-                queue.enqueue(feats[indx])
+                queue[tail, :64] = features[indx, :64]
+                tail += 1
+                if tail >= queue.size(0):
+                    tail -= queue.size(0)
 
-        return grad_feats, None, None
+        return grad_feats, None, None, None
 
 
 class UnlabeledMatchingLayer(nn.Module):
-    """Unlabeled matching for OIM loss function."""
+    """
+    Unlabeled matching of OIM loss function.
+    """
 
-    def __init__(self):
+    def __init__(self, queue_size=5000, feat_len=256):
+        """
+        Args:
+            queue_size (int): Size of the queue saving the features of unlabeled persons.
+            feat_len (int): Length of the feature extracted by the network.
+        """
         super(UnlabeledMatchingLayer, self).__init__()
-        self.queue = CircularQueue()
+        self.register_buffer("queue", torch.zeros(queue_size, feat_len))
+        self.register_buffer("tail", torch.tensor(0))
 
-    def forward(self, feats, pid_labels):
-        score = UnlabeledMatching.apply(feats, pid_labels, self.queue)
-        return score
+    def forward(self, features, pid_labels):
+        """
+        Args:
+            features (Tensor[N, feat_len]): Features of the proposals.
+            pid_labels (Tensor[N]): Ground-truth person IDs of the proposals.
+
+        Returns:
+            scores (Tensor[N, queue_size]): Unlabeled matching scores, namely the similarities
+                                            between proposals and unlabeled persons.
+        """
+        scores = UnlabeledMatching.apply(features, pid_labels, self.queue, self.tail)
+        return scores

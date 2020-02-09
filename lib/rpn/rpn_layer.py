@@ -1,85 +1,79 @@
-"""
-Author: https://github.com/jwyang/faster-rcnn.pytorch.git
-Description: Region proposal network.
-"""
-
 import torch.nn as nn
 import torch.nn.functional as F
 
 from rpn.anchor_target_layer import AnchorTargetLayer
 from rpn.proposal_layer import ProposalLayer
 from utils.config import cfg
-from utils.net_utils import smooth_l1_loss
+from utils.utils import smooth_l1_loss
 
 
 class RPN(nn.Module):
-    """Region proposal network."""
+    """
+    Region proposal network.
+    """
 
     def __init__(self, input_depth):
         super(RPN, self).__init__()
         self.num_anchors = len(cfg.ANCHOR_SCALES) * len(cfg.ANCHOR_RATIOS)
-
-        # Define the conv layer processing input feature map
+        # 3x3 conv for the hidden representation
         self.rpn_conv = nn.Conv2d(input_depth, 512, 3, 1, 1)
-
-        # Define bg/fg classifcation score layer, 9(anchors) * 2(bg/fg)
+        # 1x1 conv for predicting bg/fg classification score
+        # Output channel: 9(anchors) * 2(bg/fg)
         self.rpn_cls_score = nn.Conv2d(512, self.num_anchors * 2, 1, 1, 0)
-
-        # Define anchor box offset prediction layer, 9(anchors) * 4(coords)
+        # 1x1 conv for predicting anchor box offset
+        # Output channel: 9(anchors) * 4(coords)
         self.rpn_bbox_pred = nn.Conv2d(512, self.num_anchors * 4, 1, 1, 0)
-
-        # Define proposal layer
         self.rpn_proposal = ProposalLayer()
-
-        # Define anchor target layer
         self.rpn_anchor_target = AnchorTargetLayer()
-
-        self.rpn_loss_cls = 0
-        self.rpn_loss_bbox = 0
 
     @staticmethod
     def reshape(x, d):
         x = x.view(x.size(0), d, -1, x.size(3))
         return x
 
-    def forward(self, base_feat, im_info, gt_boxes):
-        assert base_feat.size(0) == 1, 'Single batch only.'
+    def forward(self, base_feat, img_info, gt_boxes):
+        """
+        Args:
+            base_feat (Tensor[1, C, H, W]): Basic feature extracted by backbone.
+            img_info (Tensor[3]): (height, width, scale)
+            gt_boxes (Tensor[N, 6]): Ground-truth boxes in (x1, y1, x2, y2, class, person_id) format
 
-        # Return feature map after conv-relu layer
+        Returns:
+            proposals (Tensor[N, 5]): Predicted region proposals in (0, x1, y1, x2, y2) format.
+            rpn_loss_cls, rpn_loss_bbox (Tensor): Training losses.
+        """
+        assert base_feat.size(0) == 1, "Single batch only."
+
         rpn_conv = F.relu(self.rpn_conv(base_feat), inplace=True)
 
-        # Get rpn classification score
-        rpn_cls_score = self.rpn_cls_score(rpn_conv)
-        rpn_cls_score_reshape = self.reshape(rpn_cls_score, 2)
-        rpn_cls_prob_reshape = F.softmax(rpn_cls_score_reshape, 1)
-        rpn_cls_prob = self.reshape(rpn_cls_prob_reshape, self.num_anchors * 2)
+        # Predict classification score
+        scores = self.rpn_cls_score(rpn_conv)
+        scores_reshape = self.reshape(scores, 2)
+        probs_reshape = F.softmax(scores_reshape, 1)
+        probs = self.reshape(probs_reshape, self.num_anchors * 2)
 
-        # Get rpn offsets to the anchor boxes
-        rpn_bbox_pred = self.rpn_bbox_pred(rpn_conv)
+        # Predict anchor regression deltas
+        anchor_deltas = self.rpn_bbox_pred(rpn_conv)
 
-        # Proposal layer
-        rois = self.rpn_proposal(rpn_cls_prob.data, rpn_bbox_pred.data, im_info)
+        # Produce region proposals
+        proposals = self.rpn_proposal(probs, anchor_deltas, img_info)
 
-        self.rpn_loss_cls = 0
-        self.rpn_loss_bbox = 0
+        rpn_loss_cls = 0
+        rpn_loss_bbox = 0
 
         if self.training:
             assert gt_boxes is not None
-
-            rpn_data = self.rpn_anchor_target(rpn_cls_score, gt_boxes, im_info)
+            anchor_target = self.rpn_anchor_target(scores, gt_boxes, img_info)
 
             # Classification loss
-            rpn_cls_score = rpn_cls_score_reshape.permute(0, 2, 3, 1).contiguous().view(-1, 2)
-            rpn_label = rpn_data[0].view(-1).long()
-            self.rpn_loss_cls = F.cross_entropy(rpn_cls_score, rpn_label, ignore_index=-1)
+            scores = scores_reshape.permute(0, 2, 3, 1).contiguous().view(-1, 2)
+            gt_anchor_labels = anchor_target[0].view(-1).long()
+            rpn_loss_cls = F.cross_entropy(scores, gt_anchor_labels, ignore_index=-1)
 
-            # Bounding box regression loss
-            rpn_bbox_targets, rpn_bbox_inside_weights, rpn_bbox_outside_weights = rpn_data[1:]
-            self.rpn_loss_bbox = smooth_l1_loss(rpn_bbox_pred,
-                                                rpn_bbox_targets,
-                                                rpn_bbox_inside_weights,
-                                                rpn_bbox_outside_weights,
-                                                sigma=3,
-                                                dim=[1, 2, 3])
+            # Anchor regression loss
+            gt_anchor_deltas, anchor_inside_ws, anchor_outside_ws = anchor_target[1:]
+            rpn_loss_bbox = smooth_l1_loss(
+                anchor_deltas, gt_anchor_deltas, anchor_inside_ws, anchor_outside_ws, sigma=3
+            )
 
-        return rois, self.rpn_loss_cls, self.rpn_loss_bbox
+        return proposals, rpn_loss_cls, rpn_loss_bbox

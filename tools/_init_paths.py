@@ -1,8 +1,3 @@
-"""
-Author: 520Chris
-Description: Initialize PYTHONPATH.
-"""
-
 import os.path as osp
 import sys
 

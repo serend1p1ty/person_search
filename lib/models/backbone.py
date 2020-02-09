@@ -1,23 +1,21 @@
-"""
-Author: 520Chris
-Description: Extract the basic features of the images, which is for RPN and
-             predicting the classes and regression target of each proposal.
-"""
-
 import torch.nn as nn
 
 
-class BaseFeatLayer(nn.Module):
-    """Extract the basic features of the images."""
+class Backbone(nn.Module):
+    """
+    Extract the basic features of the images (conv1 --> conv4_3).
+    The name of each module is exactly the same as in the original caffe code.
+    """
 
     def __init__(self):
-        super(BaseFeatLayer, self).__init__()
+        super(Backbone, self).__init__()
+        # conv1
         self.SpatialConvolution_0 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.BN_1 = nn.BatchNorm2d(64)
         self.ReLU_2 = nn.ReLU(inplace=True)
         self.Pooling_3 = nn.MaxPool2d(kernel_size=3, stride=2, padding=0, ceil_mode=True)
 
-        # layer1
+        # conv2
         self.SpatialConvolution_4 = nn.Conv2d(64, 64, kernel_size=1, stride=1, padding=0)
         self.BN_5 = nn.BatchNorm2d(64)
         self.ReLU_6 = nn.ReLU(inplace=True)
@@ -49,7 +47,7 @@ class BaseFeatLayer(nn.Module):
         self.BN_33 = nn.BatchNorm2d(256)
         self.ReLU_34 = nn.ReLU(inplace=True)
 
-        # layer2
+        # conv3
         self.SpatialConvolution_35 = nn.Conv2d(256, 128, kernel_size=1, stride=1, padding=0)
         self.BN_36 = nn.BatchNorm2d(128)
         self.ReLU_37 = nn.ReLU(inplace=True)
@@ -91,7 +89,7 @@ class BaseFeatLayer(nn.Module):
         self.BN_74 = nn.BatchNorm2d(512)
         self.ReLU_75 = nn.ReLU(inplace=True)
 
-        # layer3
+        # conv4
         self.SpatialConvolution_76 = nn.Conv2d(512, 256, kernel_size=1, stride=1, padding=0)
         self.BN_77 = nn.BatchNorm2d(256)
         self.ReLU_78 = nn.ReLU(inplace=True)
@@ -124,13 +122,14 @@ class BaseFeatLayer(nn.Module):
         self.ReLU_106 = nn.ReLU(inplace=True)
 
     def forward(self, x):
+        # conv1
         residual = x
         x = self.SpatialConvolution_0(x)
         x = self.BN_1(x)
         x = self.ReLU_2(x)
         x = self.Pooling_3(x)
 
-        # layer1
+        # conv2
         residual = self.SpatialConvolution_11(x)
         x = self.SpatialConvolution_4(x)
         x = self.BN_5(x)
@@ -167,7 +166,7 @@ class BaseFeatLayer(nn.Module):
         x = self.BN_33(x)
         x = self.ReLU_34(x)
 
-        # layer2
+        # conv3
         residual = self.SpatialConvolution_42(x)
         x = self.SpatialConvolution_35(x)
         x = self.BN_36(x)
@@ -216,7 +215,7 @@ class BaseFeatLayer(nn.Module):
         x = self.BN_74(x)
         x = self.ReLU_75(x)
 
-        # layer3
+        # conv4
         residual = self.SpatialConvolution_83(x)
         x = self.SpatialConvolution_76(x)
         x = self.BN_77(x)

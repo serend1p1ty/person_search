@@ -1,18 +1,15 @@
-"""
-Author: 520Chris
-Description: Extract the features of region proposals to identify
-             their classes and regression targets.
-"""
-
 import torch.nn as nn
 
 
-class ProposalFeatLayer(nn.Module):
-    """Extract the features of region proposals."""
+class Head(nn.Module):
+    """
+    Extract the features of region proposals (conv4_4 --> conv5).
+    The name of each module is exactly the same as in the original caffe code.
+    """
 
     def __init__(self):
-        super(ProposalFeatLayer, self).__init__()
-        # layer3
+        super(Head, self).__init__()
+        # conv4
         self.SpatialConvolution_107 = nn.Conv2d(1024, 256, kernel_size=1, stride=1, padding=0)
         self.BN_108 = nn.BatchNorm2d(256)
         self.ReLU_109 = nn.ReLU(inplace=True)
@@ -43,7 +40,7 @@ class ProposalFeatLayer(nn.Module):
         self.BN_135 = nn.BatchNorm2d(1024)
         self.ReLU_136 = nn.ReLU(inplace=True)
 
-        # layer4
+        # conv5
         self.SpatialConvolution_137 = nn.Conv2d(1024, 512, kernel_size=1, stride=1, padding=0)
         self.BN_138 = nn.BatchNorm2d(512)
         self.ReLU_139 = nn.ReLU(inplace=True)
@@ -78,7 +75,7 @@ class ProposalFeatLayer(nn.Module):
         self.Pooling_168 = nn.AvgPool2d(kernel_size=7, stride=1, padding=0, ceil_mode=True)
 
     def forward(self, x):
-        # layer3
+        # conv4
         residual = x
         x = self.SpatialConvolution_107(x)
         x = self.BN_108(x)
@@ -115,7 +112,7 @@ class ProposalFeatLayer(nn.Module):
         x = self.BN_135(x)
         x = self.ReLU_136(x)
 
-        # layer4
+        # conv5
         residual = self.SpatialConvolution_144(x)
         x = self.SpatialConvolution_137(x)
         x = self.BN_138(x)
