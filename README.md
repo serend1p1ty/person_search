@@ -4,7 +4,7 @@
 
 A pytorch implementation for CVPR 2017 "Joint Detection and Identification Feature Learning for Person Search".
 
-The code is based on the [offcial caffe version](<[https://link](https://github.com/ShuangLI59/person_search.git)>).
+The code is based on the [offcial caffe version](https://github.com/ShuangLI59/person_search.git).
 
 ## Highlights
 
