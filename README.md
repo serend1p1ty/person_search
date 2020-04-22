@@ -56,3 +56,8 @@ You can check the usage of `train_net.py` by running `python tools/train_net.py 
 ## Test
 
 `python tools/test_net.py --gpu 0 --checkpoint data/trained_model/checkpoint_step_50000.pth`
+
+## Future plans
+
+-   Support for PRW dataset.
+-   Re-implementation based on detectron2
