@@ -6,7 +6,7 @@ A pytorch implementation for CVPR 2017 "Joint Detection and Identification Featu
 
 The code is based on the [offcial caffe version](<[https://link](https://github.com/ShuangLI59/person_search.git)>).
 
-But it has the following features:
+## Highlights
 
 -   **Simpler code**: After reduction and reconstruction of the original code, the current version is simpler and easier to understand.
 -   **Pure Pytorch code**: Numpy is not used, except for data reading.
@@ -42,7 +42,7 @@ BTW, `$ROOT/data` saves all experimental data, include: dataset, pretrained mode
 3. Run `python tools/demo.py --gpu 0 --checkpoint data/trained_model/checkpoint_step_50000.pth`.
    And then you can checkout the result in `demo` directory.
 
-![alt](demo.jpg)
+![demo.jpg](./imgs/demo.jpg)
 
 ## Train
 
@@ -51,7 +51,7 @@ BTW, `$ROOT/data` saves all experimental data, include: dataset, pretrained mode
 3. `python tools/train_net.py --gpu 0`
 4. Trained model will be saved to `$ROOT/data/trained_model/`
 
-You can check the usage of `train_net` by running `python tools/train_net -h`
+You can check the usage of `train_net.py` by running `python tools/train_net.py -h`
 
 ## Test
 
