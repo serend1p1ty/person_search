@@ -8,7 +8,7 @@ The code is based on the [offcial caffe version](https://github.com/ShuangLI59/p
 
 ## Highlights
 
--   **Simpler code**: After reduction and reconstruction of the original code, the current version is simpler and easier to understand.
+-   **Simpler code**: After reduction and refactoring of the original code, the current version is simpler and easier to understand.
 -   **Pure Pytorch code**: Numpy is not used, except for data reading.
 -   **Good code style**: Linter (flake8) and formatter (black) are used to ensure code quality.
 
@@ -40,7 +40,7 @@ $ROOT/data
 BTW, `$ROOT/data` saves all experimental data, include: dataset, pretrained model, trained model, and so on.
 
 3. Run `python tools/demo.py --gpu 0 --checkpoint data/trained_model/checkpoint_step_50000.pth`.
-   And then you can checkout the result in `demo` directory.
+   And then you can checkout the result in `imgs` directory.
 
 ![demo.jpg](./imgs/demo.jpg)
 
