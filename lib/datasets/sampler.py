@@ -24,8 +24,6 @@ class PSSampler(Sampler):
             row_perm = np.random.permutation(np.arange(inds.shape[0]))
             inds = np.reshape(inds[row_perm, :], (-1,))
             perm = inds
-            if "DEBUG" in os.environ:
-                perm = np.arange(len(self.roidb))
         else:
             perm = np.random.permutation(np.arange(len(self.roidb)))
         return iter(perm)

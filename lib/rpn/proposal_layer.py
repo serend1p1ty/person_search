@@ -118,13 +118,7 @@ class ProposalLayer(nn.Module):
 
         # 4. Sort all (proposal, score) pairs by score from highest to lowest
         # 5. Take top pre_nms_topN (e.g. 6000)
-        if "DEBUG" in os.environ:
-            import numpy as np
-
-            order = np.argsort(probs.view(-1).cpu().detach()).numpy()[::-1]
-            order = torch.from_numpy(order.copy())
-        else:
-            order = probs.view(-1).argsort(descending=True)
+        order = probs.view(-1).argsort(descending=True)
         if pre_nms_topN > 0:
             order = order[:pre_nms_topN]
         proposals = proposals[order]
@@ -133,10 +127,7 @@ class ProposalLayer(nn.Module):
         # 6. Apply nms (e.g. threshold = 0.7)
         # 7. Take after_nms_topN (e.g. 300)
         # 8. Return the top proposals
-        if "DEBUG" in os.environ:
-            keep = torch.arange(proposals.shape[0])
-        else:
-            keep = nms(proposals, probs.squeeze(1), nms_thresh)
+        keep = nms(proposals, probs.squeeze(1), nms_thresh)
         if post_nms_topN > 0:
             keep = keep[:post_nms_topN]
         proposals = proposals[keep]

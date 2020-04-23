@@ -79,20 +79,9 @@ class AnchorTargetLayer(nn.Module):
         anchors = anchors[keep]
 
         overlaps = bbox_overlaps(anchors, gt_boxes[:, :4])
-
-        if "DEBUG" in os.environ:
-            import numpy as np
-
-            argmax_overlaps = np.argmax(overlaps.cpu(), axis=1)
-            max_overlaps = torch.from_numpy(np.max(overlaps.cpu().numpy(), axis=1))
-            gt_max_overlaps = torch.from_numpy(np.max(overlaps.cpu().numpy(), axis=0)).type_as(
-                overlaps
-            )
-            gt_argmax_overlaps = np.nonzero(overlaps == gt_max_overlaps)[:, 0]
-        else:
-            max_overlaps, argmax_overlaps = overlaps.max(dim=1)
-            gt_max_overlaps = overlaps.max(dim=0)[0]
-            gt_argmax_overlaps = torch.nonzero(overlaps == gt_max_overlaps)[:, 0]
+        max_overlaps, argmax_overlaps = overlaps.max(dim=1)
+        gt_max_overlaps = overlaps.max(dim=0)[0]
+        gt_argmax_overlaps = torch.nonzero(overlaps == gt_max_overlaps)[:, 0]
 
         # label: 1 is positive, 0 is negative, -1 is dont care
         # The anchors which satisfied both positive and negative conditions will be as positive
@@ -108,20 +97,14 @@ class AnchorTargetLayer(nn.Module):
         num_fg = int(cfg.TRAIN.RPN_FG_FRACTION * cfg.TRAIN.RPN_BATCHSIZE)
         fg_inds = torch.nonzero(labels == 1)[:, 0]
         if len(fg_inds) > num_fg:
-            if "DEBUG" in os.environ:
-                disable_inds = fg_inds[: len(fg_inds) - num_fg]
-            else:
-                disable_inds = torch_rand_choice(fg_inds, len(fg_inds) - num_fg)
+            disable_inds = torch_rand_choice(fg_inds, len(fg_inds) - num_fg)
             labels[disable_inds] = -1
 
         # Subsample negative labels if we have too many
         num_bg = cfg.TRAIN.RPN_BATCHSIZE - torch.sum(labels == 1)
         bg_inds = torch.nonzero(labels == 0)[:, 0]
         if len(bg_inds) > num_bg:
-            if "DEBUG" in os.environ:
-                disable_inds = bg_inds[: len(bg_inds) - num_bg]
-            else:
-                disable_inds = torch_rand_choice(bg_inds, len(bg_inds) - num_bg)
+            disable_inds = torch_rand_choice(bg_inds, len(bg_inds) - num_bg)
             labels[disable_inds] = -1
 
         deltas = bbox_transform(anchors, gt_boxes[argmax_overlaps, :4])

@@ -64,10 +64,7 @@ class ProposalTargetLayer(nn.Module):
         fg_inds = torch.nonzero(max_overlaps >= cfg.TRAIN.FG_THRESH)[:, 0]
         num_fg = min(num_fg, fg_inds.numel())
         if fg_inds.numel() > 0:
-            if "DEBUG" in os.environ:
-                fg_inds = fg_inds[:num_fg]
-            else:
-                fg_inds = torch_rand_choice(fg_inds, num_fg)
+            fg_inds = torch_rand_choice(fg_inds, num_fg)
 
         # Sample background proposals
         bg_inds = torch.nonzero(
@@ -75,10 +72,7 @@ class ProposalTargetLayer(nn.Module):
         )[:, 0]
         num_bg = min(batch_size - num_fg, bg_inds.numel())
         if bg_inds.numel() > 0:
-            if "DEBUG" in os.environ:
-                bg_inds = bg_inds[:num_bg]
-            else:
-                bg_inds = torch_rand_choice(bg_inds, num_bg)
+            bg_inds = torch_rand_choice(bg_inds, num_bg)
 
         # assert num_fg + num_bg == batch_size
 

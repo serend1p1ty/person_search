@@ -56,14 +56,14 @@ class RPN(nn.Module):
         anchor_deltas = self.rpn_bbox_pred(rpn_conv)
 
         # Produce region proposals
-        proposals = self.rpn_proposal(probs, anchor_deltas, img_info)
+        proposals = self.rpn_proposal(probs.data, anchor_deltas.data, img_info)
 
         rpn_loss_cls = 0
         rpn_loss_bbox = 0
 
         if self.training:
             assert gt_boxes is not None
-            anchor_target = self.rpn_anchor_target(scores, gt_boxes, img_info)
+            anchor_target = self.rpn_anchor_target(scores.data, gt_boxes, img_info)
 
             # Classification loss
             scores = scores_reshape.permute(0, 2, 3, 1).contiguous().view(-1, 2)

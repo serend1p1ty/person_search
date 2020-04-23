@@ -214,7 +214,7 @@ if __name__ == "__main__":
                     logging.info(
                         (
                             "\n--------------------------------------------------------------\n"
-                            + "epoch: [%s / %s], iteration [%s / %s], loss: %.4f\n"
+                            + "epoch: [%s / %s], iteration: [%s / %s], loss: %.4f\n"
                             + "time cost: %.2f seconds, learning rate: %s\n"
                             + "--------------------------------------------------------------"
                         )
