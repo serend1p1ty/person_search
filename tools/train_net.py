@@ -177,7 +177,7 @@ if __name__ == "__main__":
                 img, img_info, gt_boxes
             )
             loss_iter = (rpn_loss_cls + rpn_loss_bbox + loss_cls + loss_bbox + loss_oim) / iter_size
-            loss += loss_iter
+            loss += loss_iter.item()
             loss_iter.backward()
 
             accumulated_step += 1
@@ -214,13 +214,9 @@ if __name__ == "__main__":
                     logging.info(
                         (
                             "\n--------------------------------------------------------------\n"
-                            + "Epoch: [%s / %s], iteration [%s / %s], loss: %.4f\n"
-                            + "Time cost: %.2f seconds\n"
-                            + "Learning rate: %s\n"
-                            + "The %s-th iteration loss:\n"
-                            + "  rpn_loss_cls: %.4f, rpn_loss_bbox: %.4f\n"
-                            + "  loss_cls: %.4f, loss_bbox: %.4f, loss_oim: %.4f\n"
-                            + "--------------------------------------------------------------\n"
+                            + "epoch: [%s / %s], iteration [%s / %s], loss: %.4f\n"
+                            + "time cost: %.2f seconds, learning rate: %s\n"
+                            + "--------------------------------------------------------------"
                         )
                         % (
                             epoch,
@@ -230,12 +226,6 @@ if __name__ == "__main__":
                             display_loss,
                             time.time() - start,
                             optimizer.param_groups[0]["lr"],
-                            real_step,
-                            rpn_loss_cls,
-                            rpn_loss_bbox,
-                            loss_cls,
-                            loss_bbox,
-                            loss_oim,
                         )
                     )
 
