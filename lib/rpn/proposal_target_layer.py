@@ -5,8 +5,6 @@
 # Written by Ross Girshick and Sean Bell
 # --------------------------------------------------------
 
-import os
-
 import torch
 import torch.nn as nn
 
