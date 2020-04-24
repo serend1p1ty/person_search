@@ -23,7 +23,7 @@ Run `pip install -r requirements.txt` in the root directory of the project
 Let's say `$ROOT` is the root directory.
 
 1. Download [CUHK-SYSU](https://pan.baidu.com/s/1jHLfeZk) dataset, unzip to `$ROOT/data/dataset/`
-2. Download our [trained model](https://pan.baidu.com/s/1myLvpWHWJcAne3xDVuvQGg) (extraction code: uuti) to `$ROOT/data/trained_model/`
+2. Download our [trained model](https://pan.baidu.com/s/1myLvpWHWJcAne3xDVuvQGg) (extraction code: `uuti`) to `$ROOT/data/trained_model/`
 
 After the above two steps, the directory structure should look like this:
 
@@ -47,7 +47,7 @@ BTW, `$ROOT/data` saves all experimental data, include: dataset, pretrained mode
 ## Train
 
 1. Prepare dataset as we mentioned in **Quick Start** section.
-2. Download [pretrained model](https://pan.baidu.com/s/1pYkGhnpl46DCuKyIbNNXqQ) to `$ROOT/data/pretrained_model/`
+2. Download [pretrained model](https://pan.baidu.com/s/1dC8dEuB_8pV8m6Msrj8dXw) (extraction code `ucnw`) to `$ROOT/data/pretrained_model/`
 3. `python tools/train_net.py --gpu 0`
 4. Trained model will be saved to `$ROOT/data/trained_model/`
 
