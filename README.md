@@ -57,6 +57,16 @@ You can check the usage of `train_net.py` by running `python tools/train_net.py 
 
 `python tools/test_net.py --gpu 0 --checkpoint data/trained_model/checkpoint_step_50000.pth`
 
+The result should be around:
+
+```
+Search ranking:
+   mAP = 76.78%
+   Top- 1 = 77.48%
+   Top- 5 = 88.48%
+   Top-10 = 91.52%
+```
+
 ## Future plans
 
 -   Support for PRW dataset.
