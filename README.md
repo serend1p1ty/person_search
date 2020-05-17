@@ -68,5 +68,5 @@ Search ranking:
 
 ## Future plans
 
--   Support for PRW dataset.
--   Re-implementation based on detectron2
+-   Support PRW dataset.
+-   Re-implementation based on mmdetection
