@@ -84,11 +84,13 @@ class PersonSearchRoIHead(StandardRoIHead):
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
 
-    def simple_test_bboxes(self, x, img_metas, proposals, rcnn_test_cfg, rescale=False, flag=False):
+    def simple_test_bboxes(
+        self, x, img_metas, proposals, rcnn_test_cfg, rescale=False, use_rpn=True
+    ):
         """Test only det bboxes without augmentation."""
         rois = bbox2roi(proposals)
         bbox_results = self._bbox_forward(x, rois)
-        if flag:
+        if not use_rpn:
             return None, None, bbox_results["feature"]
         img_shape = img_metas[0]["img_shape"]
         scale_factor = img_metas[0]["scale_factor"]
@@ -104,12 +106,12 @@ class PersonSearchRoIHead(StandardRoIHead):
         )
         return det_bboxes, det_labels, det_features
 
-    def simple_test(self, x, proposal_list, img_metas, proposals=None, rescale=False, flag=False):
+    def simple_test(self, x, proposal_list, img_metas, proposals=None, rescale=False, use_rpn=True):
         """Test without augmentation."""
         assert self.with_bbox, "Bbox head must be implemented."
 
         det_bboxes, det_labels, det_features = self.simple_test_bboxes(
-            x, img_metas, proposal_list, self.test_cfg, rescale=rescale, flag=flag
+            x, img_metas, proposal_list, self.test_cfg, rescale=rescale, use_rpn=use_rpn
         )
         if det_bboxes is None:
             return None, det_features

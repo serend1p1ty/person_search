@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from bbox_nms import multiclass_nms
 from mmdet.core import auto_fp16, force_fp32, multi_apply
 from mmdet.models.builder import HEADS
 from mmdet.models.losses import accuracy
 from mmdet.models.roi_heads.bbox_heads import BBoxHead
-from oim_loss import OIMLoss
+
+from .bbox_nms import multiclass_nms
+from .oim_loss import OIMLoss
 
 
 @HEADS.register_module()

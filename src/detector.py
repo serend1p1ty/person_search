@@ -72,5 +72,5 @@ class PersonSearchDetector(TwoStageDetector):
             proposal_list = proposals
 
         return self.roi_head.simple_test(
-            x, proposal_list, img_metas, rescale=rescale, flag=(proposals is not None)
+            x, proposal_list, img_metas, rescale=rescale, use_rpn=(proposals is None)
         )

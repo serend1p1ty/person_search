@@ -9,16 +9,12 @@ import torch
 from mmcv import Config, DictAction
 from mmcv.runner import init_dist
 
-from bbox_head import PersonSearchBBoxHead
-from cuhk_sysu import CUHKSYSU
-from detector import PersonSearchDetector
 from mmdet import __version__
 from mmdet.apis import set_random_seed, train_detector
 from mmdet.datasets import build_dataset
 from mmdet.models import build_detector
 from mmdet.utils import collect_env, get_root_logger
-from pipeline import LoadPersonID
-from roi_head import PersonSearchRoIHead
+from src import *  # noqa
 
 
 def parse_args():

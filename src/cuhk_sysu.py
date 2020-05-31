@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import pickle as pk
 
 import numpy as np
 from PIL import Image
@@ -8,7 +9,17 @@ from sklearn.metrics import average_precision_score
 
 from mmdet.datasets.builder import DATASETS
 from mmdet.datasets.custom import CustomDataset
-from utils import pickle, unpickle
+
+
+def pickle(data, file_path):
+    with open(file_path, "wb") as f:
+        pk.dump(data, f, pk.HIGHEST_PROTOCOL)
+
+
+def unpickle(file_path):
+    with open(file_path, "rb") as f:
+        data = pk.load(f)
+    return data
 
 
 class CUHKSYSULoader:
