@@ -1,7 +1,7 @@
 import os
 import os.path as osp
-import pickle as pk
 
+import mmcv
 import numpy as np
 from PIL import Image
 from scipy.io import loadmat
@@ -9,17 +9,6 @@ from sklearn.metrics import average_precision_score
 
 from mmdet.datasets.builder import DATASETS
 from mmdet.datasets.custom import CustomDataset
-
-
-def pickle(data, file_path):
-    with open(file_path, "wb") as f:
-        pk.dump(data, f, pk.HIGHEST_PROTOCOL)
-
-
-def unpickle(file_path):
-    with open(file_path, "rb") as f:
-        data = pk.load(f)
-    return data
 
 
 class CUHKSYSULoader:
@@ -88,7 +77,7 @@ class CUHKSYSULoader:
             os.makedirs(cache_path)
         cache_file = osp.join(cache_path, self.split + "_roidb.pkl")
         if osp.isfile(cache_file):
-            return unpickle(cache_file)
+            return mmcv.load(cache_file)
 
         # Load all images and build a dict from image to boxes
         all_imgs = loadmat(osp.join(self.data_root, "annotation", "Images.mat"))
@@ -158,7 +147,7 @@ class CUHKSYSULoader:
                     "width": size[0],
                 }
             )
-        pickle(roidb, cache_file)
+        mmcv.dump(roidb, cache_file)
         print("Save ground-truth roidb to: %s" % cache_file)
         return roidb
 
