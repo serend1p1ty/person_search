@@ -69,4 +69,3 @@ Search ranking:
 ## Future plans
 
 - [ ] Support PRW dataset.
-- [x] Re-implementation based on mmdetection --> checkout mmdetection branch.
