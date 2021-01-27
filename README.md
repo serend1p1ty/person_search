@@ -65,7 +65,3 @@ Search ranking:
    Top- 5 = 88.48%
    Top-10 = 91.52%
 ```
-
-## Future plans
-
-- [ ] Support PRW dataset.
