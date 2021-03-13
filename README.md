@@ -6,7 +6,7 @@ A pytorch implementation for CVPR 2017 "Joint Detection and Identification Featu
 
 The code is based on the [offcial caffe version](https://github.com/ShuangLI59/person_search.git).
 
-You can find a better version achieving aboud `85%` mAP :rocket: in `mmdetection` branch!
+You can find a better one achieving aboud `85%` mAP :rocket: in `mmdetection` branch!
 
 **Note**: The implementaion of Faster R-CNN in `mmdetection` branch is better than that described in original paper.
 
