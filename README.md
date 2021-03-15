@@ -53,7 +53,7 @@ BTW, `$ROOT/data` saves all experimental data, include: dataset, pretrained mode
 
 ## Train
 
-1. Prepare dataset as we mentioned in **Quick Start** section.
+1. Prepare dataset as described in **Quick Start** section.
 2. Download pretrained model ([google drive](https://drive.google.com/open?id=1vFDwjG12WC43Blo6ea_TZASDQr0lvxiM) or [baiduyun](https://pan.baidu.com/s/1dC8dEuB_8pV8m6Msrj8dXw)) (extraction code `ucnw`) to `$ROOT/data/pretrained_model/`
 3. `python tools/train_net.py --gpu 0`
 4. Trained model will be saved to `$ROOT/data/trained_model/`
