@@ -1,12 +1,16 @@
 # Person Search
 
+## News
+
+We are going to release the source code of our paper (Sequential End-to-end Network for Efficient Person Search, `94.8%` mAP :rocket: on CUHK-SYSU) accepted by AAAI 21.
+
 ## Introduction
 
 A pytorch implementation for CVPR 2017 "Joint Detection and Identification Feature Learning for Person Search".
 
 The code is based on the [offcial caffe version](https://github.com/ShuangLI59/person_search.git).
 
-You can find a better one achieving aboud `85%` mAP :rocket: in `mmdetection` branch!
+You can find a better one achieving aboud `85%` mAP in `mmdetection` branch!
 
 **Note**: The implementaion of Faster R-CNN in `mmdetection` branch is better than that described in original paper.
 
