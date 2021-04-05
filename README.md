@@ -1,8 +1,6 @@
 # Person Search
 
-## News
-
-We release the [source code](https://github.com/serend1p1ty/SeqNet.git) of our paper ([Sequential End-to-end Network for Efficient Person Search](https://arxiv.org/abs/2103.10148), `94.8%` mAP :rocket: on CUHK-SYSU) accepted by AAAI 21.
+## :sparkles: News: We release the [source code](https://github.com/serend1p1ty/SeqNet.git) of the current state-of-the-art model [SeqNet(AAAI 2021)](https://arxiv.org/abs/2103.10148), which achieves `94.8%` mAP :rocket: on CUHK-SYSU.
 
 ## Introduction
 
