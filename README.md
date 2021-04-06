@@ -1,6 +1,6 @@
 # Person Search
 
-## :sparkles: News: We release the [source code](https://github.com/serend1p1ty/SeqNet.git) of the current state-of-the-art model [SeqNet(AAAI 2021)](https://arxiv.org/abs/2103.10148), which achieves `94.8%` mAP :rocket: on CUHK-SYSU.
+## :sparkles: News: We release the [source code](https://github.com/serend1p1ty/SeqNet.git) of the current state-of-the-art model [SeqNet(AAAI 2021)](https://arxiv.org/abs/2103.10148), which achieves :trophy: `94.8%` mAP on CUHK-SYSU.
 
 ## Introduction
 
